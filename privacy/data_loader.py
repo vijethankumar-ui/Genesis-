@@ -78,3 +78,24 @@ def iter_variant_records(
 
             if limit is not None and records_read >= limit:
                 return
+
+def find_variant_records(
+    vcf_path: Path,
+    variant_id: str,
+) -> list[dict[str, Any]]:
+    """
+    Find records matching a variant ID.
+
+    Stops once the matching records have been found in the VCF.
+    Assumes the VCF contains at most one record for each variant ID.
+    """
+    if not variant_id or not variant_id.strip():
+        raise ValueError("variant_id must not be empty")
+
+    matches = []
+
+    for record in iter_variant_records(vcf_path, limit=None):
+        if record["variant_id"] == variant_id:
+            matches.append(record)
+
+    return matches

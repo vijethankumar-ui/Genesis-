@@ -1,4 +1,3 @@
-
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -7,7 +6,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from privacy.data_loader import iter_variant_records
+from privacy.data_loader import find_variant_records
 from privacy.disclosure_budget import DisclosureBudget
 from privacy.familial_exposure import FamilialExposure
 from privacy.identity_registry import IdentityRegistry
@@ -166,15 +165,14 @@ def query_genomic_data(request: QueryRequest):
         )
 
     try:
-        # Step 3: Find the requested variant in the VCF.
-        records = [
-            record
-            for record in iter_variant_records(VCF_PATH, limit=None)
-            if record["variant_id"] == request.variant_id
-        ]
+        # Step 3: Find all records matching the requested variant ID.
+        records = find_variant_records(
+            VCF_PATH,
+            request.variant_id,
+        )
 
-        # Step 4: Validate the query, consume the budget,
-        # and record direct exposure after successful budget consumption.
+        # Step 4: Execute the protected query, enforce the disclosure
+        # budget, and record familial exposure.
         result = execute_protected_query(
             records=records,
             query_type=request.query_type,

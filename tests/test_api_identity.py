@@ -1,4 +1,3 @@
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -48,10 +47,11 @@ def api_setup(tmp_path, monkeypatch):
         }
     ]
 
+    # Mock the updated lookup function used by app/main.py.
     monkeypatch.setattr(
         main,
-        "iter_variant_records",
-        lambda *args, **kwargs: iter(records),
+        "find_variant_records",
+        lambda *args, **kwargs: records,
     )
 
     return TestClient(main.app), budget, exposure
@@ -117,7 +117,7 @@ def test_unknown_researcher_is_rejected_before_data_access(
 
     monkeypatch.setattr(
         main,
-        "iter_variant_records",
+        "find_variant_records",
         fail_if_called,
     )
 
@@ -129,7 +129,7 @@ def test_unknown_researcher_is_rejected_before_data_access(
     assert response.status_code == 403
     assert "not registered" in response.json()["detail"].lower()
 
-    # The rejected request must not consume budget or record exposure.
+    # Rejected requests must not record familial exposure.
     assert exposure.get_exposure("participant-001") == 0
 
 
