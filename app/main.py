@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from privacy.data_loader import iter_variant_records
 from privacy.disclosure_budget import DisclosureBudget
+from privacy.familial_exposure import FamilialExposure
 from privacy.identity_registry import IdentityRegistry
 from privacy.protected_query import execute_protected_query
 
@@ -19,7 +20,7 @@ app = FastAPI(
         "Genomic Information Encryption "
         "and Selective Information Sharing"
     ),
-    version="0.2.0",
+    version="0.3.0",
 )
 
 VCF_PATH = Path(
@@ -43,6 +44,13 @@ IDENTITY_DB_PATH = Path(
     )
 )
 
+FAMILIAL_EXPOSURE_DB_PATH = Path(
+    os.getenv(
+        "GENESIS_FAMILIAL_EXPOSURE_DB",
+        "data/processed/familial_exposure.db",
+    )
+)
+
 
 class QueryRequest(BaseModel):
     participant_id: str = Field(min_length=1)
@@ -54,6 +62,12 @@ class QueryRequest(BaseModel):
     variant_id: str = Field(min_length=1)
     sample_id: str | None = None
     cost: int = Field(default=1, ge=1)
+
+
+class FamilyRelationshipRequest(BaseModel):
+    participant_id: str = Field(min_length=1)
+    relative_id: str = Field(min_length=1)
+    relationship: str = Field(min_length=1)
 
 
 @lru_cache(maxsize=1)
@@ -69,6 +83,11 @@ def get_budget() -> DisclosureBudget:
     )
 
 
+@lru_cache(maxsize=1)
+def get_familial_exposure() -> FamilialExposure:
+    return FamilialExposure(db_path=FAMILIAL_EXPOSURE_DB_PATH)
+
+
 @app.get("/")
 def home():
     return {
@@ -81,6 +100,50 @@ def home():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+
+@app.post("/family/relationships")
+def register_family_relationship(request: FamilyRelationshipRequest):
+    """Register an explicit relationship between two participants."""
+    try:
+        tracker = get_familial_exposure()
+        tracker.register_relationship(
+            participant_id=request.participant_id,
+            relative_id=request.relative_id,
+            relationship=request.relationship,
+        )
+
+        return {
+            "status": "registered",
+            "participant_id": request.participant_id,
+            "relative_id": request.relative_id,
+            "relationship": request.relationship,
+        }
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+@app.get("/family/exposure/{participant_id}")
+def get_family_exposure(participant_id: str):
+    """Return recorded exposure and explicitly linked relatives."""
+    try:
+        tracker = get_familial_exposure()
+
+        return {
+            "participant_id": participant_id,
+            "exposure_units": tracker.get_exposure(participant_id),
+            "linked_relatives": tracker.get_relatives(participant_id),
+        }
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
 
 
 @app.post("/query")
@@ -114,7 +177,8 @@ def query_genomic_data(request: QueryRequest):
             if record["variant_id"] == request.variant_id
         ]
 
-        # Step 4: Execute the query subject to the shared disclosure budget.
+        # Step 4: Validate the query, consume its disclosure budget,
+        # and record familial exposure after budget consumption.
         result = execute_protected_query(
             records=records,
             query_type=request.query_type,
@@ -127,6 +191,7 @@ def query_genomic_data(request: QueryRequest):
             consent_id=request.consent_id,
             sample_id=request.sample_id,
             cost=request.cost,
+            familial_exposure=get_familial_exposure(),
         )
 
         return {
