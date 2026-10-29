@@ -177,3 +177,73 @@ def test_query_api_records_familial_exposure(api_setup):
     assert status["used"] == 1
     assert status["remaining"] == 1
     assert exposure.get_exposure("participant-001") == 1
+
+def test_invalid_query_does_not_consume_budget(api_setup):
+    client, budget, exposure = api_setup
+    request = make_request("researcher-a")
+    request["query_type"] = "raw_records"
+
+    response = client.post("/query", json=request)
+
+    assert response.status_code == 422
+
+    status = budget.get_status(
+        "participant-001",
+        "researcher-a",
+        "project-001",
+        "approved_research",
+        "consent-001",
+    )
+    assert status["used"] == 0
+    assert exposure.get_exposure("participant-001") == 0
+
+
+def test_unknown_variant_does_not_consume_budget(api_setup):
+    client, budget, exposure = api_setup
+    request = make_request("researcher-a")
+    request["variant_id"] = "rs-not-in-dataset"
+
+    response = client.post("/query", json=request)
+
+    assert response.status_code == 200
+    assert response.json()["result"] is False
+
+    status = budget.get_status(
+        "participant-001",
+        "researcher-a",
+        "project-001",
+        "approved_research",
+        "consent-001",
+    )
+    assert status["used"] == 1
+    assert exposure.get_exposure("participant-001") == 1
+
+
+def test_vault_failure_does_not_consume_budget(api_setup, monkeypatch):
+    client, budget, exposure = api_setup
+
+    def fail_retrieval():
+        raise RuntimeError("Simulated vault failure")
+
+    monkeypatch.setattr(
+        main,
+        "get_vault_repository",
+        fail_retrieval,
+    )
+
+    response = client.post(
+        "/query",
+        json=make_request("researcher-a"),
+    )
+
+    assert response.status_code == 503
+
+    status = budget.get_status(
+        "participant-001",
+        "researcher-a",
+        "project-001",
+        "approved_research",
+        "consent-001",
+    )
+    assert status["used"] == 0
+    assert exposure.get_exposure("participant-001") == 0

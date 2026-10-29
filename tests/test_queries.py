@@ -103,3 +103,77 @@ def test_missing_variant_presence_returns_false_for_known_sample():
         "rs-not-present",
         "HG00096",
     ) is False
+
+from privacy.query_engine import carries_alternate_allele
+
+
+@pytest.mark.parametrize(
+    ("genotype", "expected"),
+    [
+        ("0/0", False),
+        ("0|0", False),
+        ("0/1", True),
+        ("1/1", True),
+        ("0|2", True),
+        ("3|0", True),
+        ("./.", None),
+        (".|.", None),
+        ("0/.", None),
+        ("./1", True),
+        ("", None),
+    ],
+)
+def test_genotype_interpretation(genotype, expected):
+    assert carries_alternate_allele(genotype) is expected
+
+
+def test_missing_presence_is_unknown():
+    records = [
+        {
+            "variant_id": "rs-missing",
+            "genotypes": {
+                "sample-001": "./.",
+                "sample-002": "0/.",
+            },
+        }
+    ]
+
+    assert execute_query(
+        records, "variant_presence", "rs-missing", "sample-001"
+    ) is None
+
+    assert execute_query(
+        records, "variant_presence", "rs-missing", "sample-002"
+    ) is None
+
+
+def test_partial_missing_genotype_with_alternate_is_present():
+    records = [
+        {
+            "variant_id": "rs-partial",
+            "genotypes": {"sample-001": "1/."},
+        }
+    ]
+
+    assert execute_query(
+        records, "variant_presence", "rs-partial", "sample-001"
+    ) is True
+
+
+def test_carrier_count_excludes_unknown_genotypes():
+    records = [
+        {
+            "variant_id": "rs-count",
+            "genotypes": {
+                "sample-001": "0/1",
+                "sample-002": "0/0",
+                "sample-003": "./.",
+                "sample-004": "0/.",
+                "sample-005": "1/.",
+            },
+        }
+    ]
+
+    assert execute_query(
+        records, "variant_count", "rs-count"
+    ) == 2

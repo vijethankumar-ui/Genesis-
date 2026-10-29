@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from privacy.data_loader import iter_variant_records
-from privacy.vault_repository import VaultRepository
+from privacy.vault_repository import DEFAULT_INDEX_PATH, VaultRepository
 
 if TYPE_CHECKING:
     from genesis_plugin.crypto_vault import StorageVault
@@ -24,6 +24,9 @@ def ingest_vcf(
     limit: int | None = None,
 ) -> int:
     """Store records from a VCF in the vault and return the count."""
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be at least 1 or None")
+
     count = 0
 
     for record in iter_variant_records(vcf_path, limit=limit):
@@ -37,13 +40,28 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Ingest VCF records into the GENESIS encrypted vault."
     )
-    parser.add_argument("--vcf", type=Path, default=DEFAULT_VCF_PATH)
+
+    parser.add_argument(
+        "--vcf",
+        type=Path,
+        default=DEFAULT_VCF_PATH,
+        help="Input VCF file (plain or compressed, as supported by the loader).",
+    )
+
     parser.add_argument(
         "--limit",
         type=int,
         default=10,
         help="Maximum records to ingest; defaults to 10 for safe testing.",
     )
+
+    parser.add_argument(
+        "--index",
+        type=Path,
+        default=DEFAULT_INDEX_PATH,
+        help="SQLite variant index path; defaults to the project index.",
+    )
+
     args = parser.parse_args()
 
     if args.limit < 1:
@@ -55,10 +73,13 @@ def main() -> int:
     from genesis_plugin.crypto_vault import StorageVault
 
     vault = StorageVault.from_env()
-    repository = VaultRepository(vault)
+    repository = VaultRepository(vault, index_path=args.index)
 
     count = ingest_vcf(args.vcf, repository, limit=args.limit)
+
     print(f"Successfully ingested {count} VCF records.")
+    print(f"Variant index: {args.index}")
+
     return 0
 
 

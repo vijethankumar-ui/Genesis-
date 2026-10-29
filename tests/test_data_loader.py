@@ -23,8 +23,10 @@ def create_test_vcf(path):
         vcf.write(content)
 
 
-def test_load_real_vcf_records():
-    records = list(iter_variant_records(limit=3))
+def test_load_real_vcf_records(tmp_path):
+    vcf_path = tmp_path / "test.vcf.gz"
+    create_test_vcf(vcf_path)
+    records = list(iter_variant_records(vcf_path, limit=3))
 
     assert len(records) == 3
 
@@ -37,8 +39,10 @@ def test_load_real_vcf_records():
         assert record["genotypes"]
 
 
-def test_genotypes_have_valid_vcf_format():
-    records = list(iter_variant_records(limit=3))
+def test_genotypes_have_valid_vcf_format(tmp_path):
+    vcf_path = tmp_path / "test.vcf.gz"
+    create_test_vcf(vcf_path)
+    records = list(iter_variant_records(vcf_path, limit=3))
 
     for record in records:
         for genotype in record["genotypes"].values():
