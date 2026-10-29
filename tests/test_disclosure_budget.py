@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -89,42 +90,6 @@ def test_invalid_cost_is_rejected(budget):
     with pytest.raises(ValueError, match="cost"):
         consume_one(budget, cost=0)
 
-from concurrent.futures import ThreadPoolExecutor
-
-
-def test_concurrent_requests_cannot_exceed_budget(tmp_path):
-    budget = DisclosureBudget(
-        db_path=tmp_path / "concurrent.db",
-        default_limit=3,
-    )
-
-    def attempt_query():
-        try:
-            consume_one(budget)
-            return "allowed"
-        except PermissionError:
-            return "rejected"
-
-    # Simulate 12 requests trying to use a budget of only 3.
-    with ThreadPoolExecutor(max_workers=12) as executor:
-        results = list(executor.map(
-            lambda _: attempt_query(),
-            range(12),
-        ))
-
-    assert results.count("allowed") == 3
-    assert results.count("rejected") == 9
-
-    status = budget.get_status(
-        "sample-001",
-        "researcher-001",
-        "project-001",
-        "approved_research",
-        "consent-001",
-    )
-    assert status["used"] == 3
-    assert status["remaining"] == 0
-
 
 @pytest.mark.parametrize(
     "changed_scope",
@@ -140,7 +105,6 @@ def test_other_access_scopes_have_separate_budgets(
 ):
     consume_one(budget)
 
-    # A different scope must have its own initial allowance.
     status = budget.get_status(
         participant_id="sample-001",
         requester_id=changed_scope.get(
@@ -153,3 +117,45 @@ def test_other_access_scopes_have_separate_budgets(
 
     assert status["used"] == 0
     assert status["remaining"] == 3
+
+
+def test_concurrent_requests_cannot_exceed_budget(tmp_path):
+    request_count = 10
+    budget_limit = 3
+
+    budget = DisclosureBudget(
+        db_path=tmp_path / "concurrent.db",
+        default_limit=budget_limit,
+    )
+
+    def attempt_consumption():
+        try:
+            consume_one(budget)
+            return True
+        except PermissionError:
+            return False
+
+    with ThreadPoolExecutor(max_workers=request_count) as executor:
+        results = list(
+            executor.map(
+                lambda _: attempt_consumption(),
+                range(request_count),
+            )
+        )
+
+    successful_requests = sum(results)
+    rejected_requests = request_count - successful_requests
+
+    assert successful_requests == budget_limit
+    assert rejected_requests == request_count - budget_limit
+
+    status = budget.get_status(
+        "sample-001",
+        "researcher-001",
+        "project-001",
+        "approved_research",
+        "consent-001",
+    )
+
+    assert status["used"] == budget_limit
+    assert status["remaining"] == 0

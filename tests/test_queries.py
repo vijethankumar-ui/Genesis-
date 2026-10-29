@@ -55,3 +55,51 @@ def test_unsupported_query_type():
 def test_empty_variant_id():
     with pytest.raises(ValueError, match="variant_id must not be empty"):
         execute_query(RECORDS, "variant_presence", " ", "HG00096")
+
+
+def test_missing_genotype_is_not_counted_as_carrier():
+    records = [
+        {
+            "variant_id": "rs-missing",
+            "genotypes": {
+                "sample-001": "./.",
+                "sample-002": ".|.",
+            },
+        }
+    ]
+
+    assert execute_query(
+        records, "variant_count", "rs-missing"
+    ) == 0
+
+
+def test_homozygous_alternate_genotype_counts_as_one_carrier():
+    records = [
+        {
+            "variant_id": "rs-hom",
+            "genotypes": {
+                "sample-001": "1/1",
+                "sample-002": "0/1",
+                "sample-003": "0/0",
+            },
+        }
+    ]
+
+    assert execute_query(
+        records, "variant_count", "rs-hom"
+    ) == 2
+
+
+def test_variant_not_found_returns_zero_count():
+    assert execute_query(
+        RECORDS, "variant_count", "rs-not-present"
+    ) == 0
+
+
+def test_missing_variant_presence_returns_false_for_known_sample():
+    assert execute_query(
+        RECORDS,
+        "variant_presence",
+        "rs-not-present",
+        "HG00096",
+    ) is False

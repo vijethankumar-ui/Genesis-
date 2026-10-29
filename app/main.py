@@ -169,7 +169,7 @@ def query_genomic_data(request: QueryRequest):
         # Step 3: Find the requested variant in the VCF.
         records = [
             record
-            for record in iter_variant_records(VCF_PATH, limit=10000)
+            for record in iter_variant_records(VCF_PATH, limit=None)
             if record["variant_id"] == request.variant_id
         ]
 
