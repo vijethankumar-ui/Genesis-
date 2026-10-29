@@ -20,7 +20,7 @@ app = FastAPI(
         "Genomic Information Encryption "
         "and Selective Information Sharing"
     ),
-    version="0.3.0",
+    version="0.4.0",
 )
 
 VCF_PATH = Path(
@@ -129,15 +129,11 @@ def register_family_relationship(request: FamilyRelationshipRequest):
 
 @app.get("/family/exposure/{participant_id}")
 def get_family_exposure(participant_id: str):
-    """Return recorded exposure and explicitly linked relatives."""
+    """Return direct exposure and linked relatives' exposure separately."""
     try:
-        tracker = get_familial_exposure()
-
-        return {
-            "participant_id": participant_id,
-            "exposure_units": tracker.get_exposure(participant_id),
-            "linked_relatives": tracker.get_relatives(participant_id),
-        }
+        return get_familial_exposure().get_exposure_summary(
+            participant_id
+        )
 
     except ValueError as exc:
         raise HTTPException(
@@ -177,8 +173,8 @@ def query_genomic_data(request: QueryRequest):
             if record["variant_id"] == request.variant_id
         ]
 
-        # Step 4: Validate the query, consume its disclosure budget,
-        # and record familial exposure after budget consumption.
+        # Step 4: Validate the query, consume the budget,
+        # and record direct exposure after successful budget consumption.
         result = execute_protected_query(
             records=records,
             query_type=request.query_type,
@@ -206,7 +202,6 @@ def query_genomic_data(request: QueryRequest):
             detail=str(exc),
         ) from exc
     except PermissionError as exc:
-        # A registered researcher can still be denied if the budget is exhausted.
         raise HTTPException(
             status_code=429,
             detail=str(exc),

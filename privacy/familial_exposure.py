@@ -7,7 +7,7 @@ DEFAULT_DB_PATH = Path("data/processed/familial_exposure.db")
 
 
 class FamilialExposure:
-    """Track potential disclosure exposure across explicit family links."""
+    """Track direct and potential familial disclosure exposure separately."""
 
     def __init__(self, db_path: Path = DEFAULT_DB_PATH):
         self.db_path = Path(db_path)
@@ -27,10 +27,7 @@ class FamilialExposure:
                     participant_id TEXT NOT NULL,
                     relative_id TEXT NOT NULL,
                     relationship TEXT NOT NULL,
-                    PRIMARY KEY (
-                        participant_id,
-                        relative_id
-                    ),
+                    PRIMARY KEY (participant_id, relative_id),
                     CHECK (participant_id != relative_id)
                 )
                 """
@@ -51,13 +48,18 @@ class FamilialExposure:
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{field} must not be empty")
 
+    @staticmethod
+    def _validate_cost(cost: int):
+        if not isinstance(cost, int) or isinstance(cost, bool) or cost < 1:
+            raise ValueError("cost must be at least 1")
+
     def register_relationship(
         self,
         participant_id: str,
         relative_id: str,
         relationship: str,
     ):
-        """Register a relationship explicitly; do not infer kinship."""
+        """Register an explicit relationship; never infer kinship."""
         self._validate_text(participant_id, "participant_id")
         self._validate_text(relative_id, "relative_id")
         self._validate_text(relationship, "relationship")
@@ -70,9 +72,7 @@ class FamilialExposure:
                 connection.execute(
                     """
                     INSERT INTO family_relationships (
-                        participant_id,
-                        relative_id,
-                        relationship
+                        participant_id, relative_id, relationship
                     ) VALUES (?, ?, ?)
                     """,
                     (participant_id, relative_id, relationship),
@@ -92,13 +92,10 @@ class FamilialExposure:
                 SELECT relative_id
                 FROM family_relationships
                 WHERE participant_id = ?
-
                 UNION
-
                 SELECT participant_id
                 FROM family_relationships
                 WHERE relative_id = ?
-
                 ORDER BY 1
                 """,
                 (participant_id, participant_id),
@@ -112,59 +109,41 @@ class FamilialExposure:
         cost: int = 1,
     ) -> dict[str, int]:
         """
-        Record exposure units for the participant and directly linked relatives.
+        Record direct exposure only for the queried participant.
 
-        This is accounting for potential privacy exposure, not inferred
-        genetic information. Call only after the disclosure budget succeeds.
+        Potential familial exposure is calculated separately from the
+        recorded exposure of explicitly linked relatives.
         """
         self._validate_text(participant_id, "participant_id")
-
-        if (
-            not isinstance(cost, int)
-            or isinstance(cost, bool)
-            or cost < 1
-        ):
-            raise ValueError("cost must be at least 1")
-
-        relatives = self.get_relatives(participant_id)
-        affected = sorted(set([participant_id, *relatives]))
+        self._validate_cost(cost)
 
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-
-            for affected_id in affected:
-                connection.execute(
-                    """
-                    INSERT INTO familial_exposure (
-                        participant_id,
-                        exposure_units
-                    ) VALUES (?, ?)
-                    ON CONFLICT(participant_id)
-                    DO UPDATE SET exposure_units =
-                        exposure_units + excluded.exposure_units
-                    """,
-                    (affected_id, cost),
-                )
-
-            rows = connection.execute(
+            connection.execute(
                 """
-                SELECT participant_id, exposure_units
+                INSERT INTO familial_exposure (
+                    participant_id, exposure_units
+                ) VALUES (?, ?)
+                ON CONFLICT(participant_id)
+                DO UPDATE SET exposure_units =
+                    exposure_units + excluded.exposure_units
+                """,
+                (participant_id, cost),
+            )
+
+            row = connection.execute(
+                """
+                SELECT exposure_units
                 FROM familial_exposure
-                WHERE participant_id IN (
-                    SELECT participant_id
-                    FROM familial_exposure
-                )
-                """
-            ).fetchall()
+                WHERE participant_id = ?
+                """,
+                (participant_id,),
+            ).fetchone()
 
-        totals = dict(rows)
-        return {
-            affected_id: totals[affected_id]
-            for affected_id in affected
-        }
+        return {participant_id: row[0]}
 
     def get_exposure(self, participant_id: str) -> int:
-        """Return the recorded exposure total for one participant."""
+        """Return the direct recorded exposure total."""
         self._validate_text(participant_id, "participant_id")
 
         with self._connect() as connection:
@@ -178,3 +157,25 @@ class FamilialExposure:
             ).fetchone()
 
         return 0 if row is None else row[0]
+
+    def get_exposure_summary(self, participant_id: str) -> dict:
+        """Report direct exposure and linked relatives' exposure separately."""
+        self._validate_text(participant_id, "participant_id")
+
+        relatives = self.get_relatives(participant_id)
+        direct = self.get_exposure(participant_id)
+
+        relative_exposure = {
+            relative_id: self.get_exposure(relative_id)
+            for relative_id in relatives
+        }
+
+        return {
+            "participant_id": participant_id,
+            "direct_exposure_units": direct,
+            "linked_relatives": relatives,
+            "relative_direct_exposure_units": relative_exposure,
+            "potential_familial_exposure_units": sum(
+                relative_exposure.values()
+            ),
+        }
