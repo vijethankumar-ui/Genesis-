@@ -1,4 +1,3 @@
-
 import psycopg
 
 from app.core.config import (
@@ -10,17 +9,21 @@ from app.core.config import (
 )
 
 
-def check_database_connection() -> str:
+def get_connection():
     if not DB_PASSWORD:
         raise RuntimeError("DB_PASSWORD is missing from .env")
 
-    with psycopg.connect(
+    return psycopg.connect(
         host=DB_HOST,
         port=DB_PORT,
         dbname=DB_NAME,
         user=DB_USER,
         password=DB_PASSWORD,
-    ) as connection:
+    )
+
+
+def check_database_connection() -> str:
+    with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute("SELECT current_database();")
             result = cursor.fetchone()

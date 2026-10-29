@@ -113,7 +113,10 @@ def revoke_consent(
         )
 
     try:
-        policy = revoke_consent_policy(policy_id)
+        policy = revoke_consent_policy(
+    policy_id,
+    actor_id=current_user["sub"],
+)
     except PsycopgError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -138,21 +141,39 @@ def authorize(
     current_user: dict = Depends(get_current_user),
 ):
     authenticated_role = current_user["role"]
+    actor_id = current_user["sub"]
 
     if request.recipient_role != authenticated_role:
-        return AuthorizationDecision(
+        decision = AuthorizationDecision(
             decision="DENY",
             reason="Requested recipient role does not match authenticated role.",
         )
 
+        from app.services.audit_service import append_audit_event
+
+        append_audit_event(
+            actor=actor_id,
+            subject_id=request.subject_id,
+            data_scope=request.data_scope,
+            purpose=request.purpose,
+            policy_id=None,
+            decision=decision.decision,
+            reason=decision.reason,
+            action="AUTHORIZE",
+        )
+
+        return decision
+
     try:
-        return authorize_access(request)
+        return authorize_access(
+            request,
+            actor_id=actor_id,
+        )
     except PsycopgError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Authorization service unavailable",
         )
-
 
 
 @app.post("/auth/login", response_model=AuthenticationTokenResponse)

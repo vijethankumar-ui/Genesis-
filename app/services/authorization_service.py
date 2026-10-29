@@ -1,4 +1,3 @@
-
 import psycopg
 
 from app.core.config import (
@@ -9,9 +8,13 @@ from app.core.config import (
     DB_PASSWORD,
 )
 from app.models.authorization import AccessRequest, AuthorizationDecision
+from app.services.audit_service import append_audit_event
 
 
-def authorize_access(request: AccessRequest) -> AuthorizationDecision:
+def authorize_access(
+    request: AccessRequest,
+    actor_id: str | None = None,
+) -> AuthorizationDecision:
     if not DB_PASSWORD:
         raise RuntimeError("DB_PASSWORD is missing from .env")
 
@@ -33,8 +36,8 @@ def authorize_access(request: AccessRequest) -> AuthorizationDecision:
                   AND recipient_role = %s
                   AND status = 'ACTIVE'
                   AND expiry_date >= CURRENT_DATE
-                  ORDER BY expiry_date DESC, policy_id
-                  LIMIT 1
+                ORDER BY expiry_date DESC, policy_id
+                LIMIT 1
                 """,
                 (
                     request.subject_id,
@@ -46,7 +49,7 @@ def authorize_access(request: AccessRequest) -> AuthorizationDecision:
             row = cursor.fetchone()
 
     if row is None:
-        return AuthorizationDecision(
+        decision = AuthorizationDecision(
             decision="DENY",
             reason=(
                 "No active, unexpired consent policy matches "
@@ -54,8 +57,32 @@ def authorize_access(request: AccessRequest) -> AuthorizationDecision:
             ),
         )
 
-    return AuthorizationDecision(
+        append_audit_event(
+            actor=actor_id,
+            subject_id=request.subject_id,
+            data_scope=request.data_scope,
+            purpose=request.purpose,
+            policy_id=None,
+            decision=decision.decision,
+            reason=decision.reason,
+        )
+
+        return decision
+
+    decision = AuthorizationDecision(
         decision="PERMIT",
         reason="A matching active, unexpired consent policy was found.",
         policy_id=str(row[0]),
     )
+
+    append_audit_event(
+        actor=actor_id,
+        subject_id=request.subject_id,
+        data_scope=request.data_scope,
+        purpose=request.purpose,
+        policy_id=decision.policy_id,
+        decision=decision.decision,
+        reason=decision.reason,
+    )
+
+    return decision

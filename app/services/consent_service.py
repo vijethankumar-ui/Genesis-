@@ -11,7 +11,7 @@ from app.core.config import (
     DB_PASSWORD,
 )
 from app.models.consent import ConsentPolicy, ConsentPolicyCreate
-
+from app.services.audit_service import append_audit_event
 
 def create_consent_policy(data: ConsentPolicyCreate) -> ConsentPolicy:
     policy_id = uuid4()
@@ -97,7 +97,11 @@ def get_consent_policy(policy_id: UUID) -> ConsentPolicy | None:
         status=row[6],
     )
 
-def revoke_consent_policy(policy_id: UUID) -> ConsentPolicy | None:
+
+def revoke_consent_policy(
+    policy_id: UUID,
+    actor_id: str | None = None,
+) -> ConsentPolicy | None:
     with psycopg.connect(
         host=DB_HOST,
         port=DB_PORT,
@@ -109,20 +113,32 @@ def revoke_consent_policy(policy_id: UUID) -> ConsentPolicy | None:
             cursor.execute(
                 """
                 UPDATE consent_policies
-                SET status = 'REVOKED'
+                SET status = 'REVOKED',
+                    revoked_at = CURRENT_TIMESTAMP,
+                    revoked_by = %s
                 WHERE policy_id = %s
                   AND status = 'ACTIVE'
                 RETURNING policy_id, subject_id, data_scope,
                           approved_purpose, recipient_role,
                           expiry_date, status
                 """,
-                (policy_id,),
+                (actor_id, policy_id),
             )
-
             row = cursor.fetchone()
 
     if row is None:
         return None
+
+    append_audit_event(
+        actor=actor_id,
+        subject_id=row[1],
+        data_scope=row[2],
+        purpose=row[3],
+        policy_id=str(row[0]),
+        decision="SUCCESS",
+        reason="Consent policy revoked.",
+        action="CONSENT_REVOKED",
+    )
 
     return ConsentPolicy(
         policy_id=row[0],
