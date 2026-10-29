@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 import app.main as main
 from privacy.disclosure_budget import DisclosureBudget
+from privacy.familial_exposure import FamilialExposure
 from privacy.identity_registry import IdentityRegistry
 
 
@@ -11,6 +12,7 @@ from privacy.identity_registry import IdentityRegistry
 def api_setup(tmp_path, monkeypatch):
     identity_db = tmp_path / "identities.db"
     budget_db = tmp_path / "budgets.db"
+    familial_db = tmp_path / "familial_exposure.db"
     vcf_path = tmp_path / "test.vcf.gz"
     vcf_path.touch()
 
@@ -24,18 +26,27 @@ def api_setup(tmp_path, monkeypatch):
         identity_registry=registry,
     )
 
-    monkeypatch.setattr(main, "VCF_PATH", vcf_path)
-    monkeypatch.setattr(main, "get_identity_registry", lambda: registry)
-    monkeypatch.setattr(main, "get_budget", lambda: budget)
+    exposure = FamilialExposure(db_path=familial_db)
 
-    records = [{
-        "chromosome": "22",
-        "position": 16050213,
-        "variant_id": "rs123",
-        "reference": "C",
-        "alternate": "T",
-        "genotypes": {"sample-001": "0/1"},
-    }]
+    monkeypatch.setattr(main, "VCF_PATH", vcf_path)
+    monkeypatch.setattr(
+        main, "get_identity_registry", lambda: registry
+    )
+    monkeypatch.setattr(main, "get_budget", lambda: budget)
+    monkeypatch.setattr(
+        main, "get_familial_exposure", lambda: exposure
+    )
+
+    records = [
+        {
+            "chromosome": "22",
+            "position": 16050213,
+            "variant_id": "rs123",
+            "reference": "C",
+            "alternate": "T",
+            "genotypes": {"sample-001": "0/1"},
+        }
+    ]
 
     monkeypatch.setattr(
         main,
@@ -43,7 +54,7 @@ def api_setup(tmp_path, monkeypatch):
         lambda *args, **kwargs: iter(records),
     )
 
-    return TestClient(main.app), budget
+    return TestClient(main.app), budget, exposure
 
 
 def make_request(requester_id):
@@ -60,11 +71,20 @@ def make_request(requester_id):
 
 
 def test_linked_accounts_share_budget_through_api(api_setup):
-    client, budget = api_setup
+    client, budget, _ = api_setup
 
-    first = client.post("/query", json=make_request("researcher-a"))
-    second = client.post("/query", json=make_request("researcher-b"))
-    third = client.post("/query", json=make_request("researcher-a"))
+    first = client.post(
+        "/query",
+        json=make_request("researcher-a"),
+    )
+    second = client.post(
+        "/query",
+        json=make_request("researcher-b"),
+    )
+    third = client.post(
+        "/query",
+        json=make_request("researcher-a"),
+    )
 
     assert first.status_code == 200
     assert first.json()["result"] is True
@@ -82,6 +102,7 @@ def test_linked_accounts_share_budget_through_api(api_setup):
         "approved_research",
         "consent-001",
     )
+
     assert status["used"] == 2
     assert status["remaining"] == 0
 
@@ -89,12 +110,16 @@ def test_linked_accounts_share_budget_through_api(api_setup):
 def test_unknown_researcher_is_rejected_before_data_access(
     api_setup, monkeypatch
 ):
-    client, _ = api_setup
+    client, _, exposure = api_setup
 
     def fail_if_called(*args, **kwargs):
         pytest.fail("Dataset must not be read for unknown researchers")
 
-    monkeypatch.setattr(main, "iter_variant_records", fail_if_called)
+    monkeypatch.setattr(
+        main,
+        "iter_variant_records",
+        fail_if_called,
+    )
 
     response = client.post(
         "/query",
@@ -103,3 +128,30 @@ def test_unknown_researcher_is_rejected_before_data_access(
 
     assert response.status_code == 403
     assert "not registered" in response.json()["detail"].lower()
+
+    # The rejected request must not consume budget or record exposure.
+    assert exposure.get_exposure("participant-001") == 0
+
+
+def test_query_api_records_familial_exposure(api_setup):
+    client, budget, exposure = api_setup
+
+    response = client.post(
+        "/query",
+        json=make_request("researcher-a"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result"] is True
+
+    status = budget.get_status(
+        "participant-001",
+        "researcher-a",
+        "project-001",
+        "approved_research",
+        "consent-001",
+    )
+
+    assert status["used"] == 1
+    assert status["remaining"] == 1
+    assert exposure.get_exposure("participant-001") == 1
