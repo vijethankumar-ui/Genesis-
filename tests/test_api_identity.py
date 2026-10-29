@@ -1,3 +1,4 @@
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -12,8 +13,9 @@ def api_setup(tmp_path, monkeypatch):
     identity_db = tmp_path / "identities.db"
     budget_db = tmp_path / "budgets.db"
     familial_db = tmp_path / "familial_exposure.db"
-    vcf_path = tmp_path / "test.vcf.gz"
-    vcf_path.touch()
+    vault_index_path = tmp_path / "variant_index.db"
+    vault_index_path.touch()
+
 
     registry = IdentityRegistry(db_path=identity_db)
     registry.register("researcher-a", "group-001")
@@ -27,15 +29,6 @@ def api_setup(tmp_path, monkeypatch):
 
     exposure = FamilialExposure(db_path=familial_db)
 
-    monkeypatch.setattr(main, "VCF_PATH", vcf_path)
-    monkeypatch.setattr(
-        main, "get_identity_registry", lambda: registry
-    )
-    monkeypatch.setattr(main, "get_budget", lambda: budget)
-    monkeypatch.setattr(
-        main, "get_familial_exposure", lambda: exposure
-    )
-
     records = [
         {
             "chromosome": "22",
@@ -47,11 +40,38 @@ def api_setup(tmp_path, monkeypatch):
         }
     ]
 
-    # Mock the updated lookup function used by app/main.py.
+    class FakeVaultRepository:
+        def get_variant_records(self, variant_id):
+            return [
+                record
+                for record in records
+                if record.get("variant_id") == variant_id
+            ]
+
+    repository = FakeVaultRepository()
+
     monkeypatch.setattr(
         main,
-        "find_variant_records",
-        lambda *args, **kwargs: records,
+        "VAULT_INDEX_PATH",
+        vault_index_path,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main,
+        "get_identity_registry",
+        lambda: registry,
+    )
+    monkeypatch.setattr(main, "get_budget", lambda: budget)
+    monkeypatch.setattr(
+        main,
+        "get_familial_exposure",
+        lambda: exposure,
+    )
+    monkeypatch.setattr(
+        main,
+        "get_vault_repository",
+        lambda: repository,
+        raising=False,
     )
 
     return TestClient(main.app), budget, exposure
@@ -112,12 +132,14 @@ def test_unknown_researcher_is_rejected_before_data_access(
 ):
     client, _, exposure = api_setup
 
-    def fail_if_called(*args, **kwargs):
-        pytest.fail("Dataset must not be read for unknown researchers")
+    def fail_if_called():
+        pytest.fail(
+            "Vault repository must not be accessed for unknown researchers"
+        )
 
     monkeypatch.setattr(
         main,
-        "find_variant_records",
+        "get_vault_repository",
         fail_if_called,
     )
 

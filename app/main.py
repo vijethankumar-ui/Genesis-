@@ -1,3 +1,5 @@
+
+import logging
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -6,12 +8,14 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from privacy.data_loader import find_variant_records
 from privacy.disclosure_budget import DisclosureBudget
 from privacy.familial_exposure import FamilialExposure
 from privacy.identity_registry import IdentityRegistry
 from privacy.protected_query import execute_protected_query
+from privacy.vault_repository import VaultRepository
 
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="GENESIS",
@@ -19,13 +23,13 @@ app = FastAPI(
         "Genomic Information Encryption "
         "and Selective Information Sharing"
     ),
-    version="0.4.0",
+    version="0.5.0",
 )
 
-VCF_PATH = Path(
+VAULT_INDEX_PATH = Path(
     os.getenv(
-        "GENESIS_VCF_PATH",
-        "data/raw/ALL.chr22.phase3_shapeit2_mvncall_integrated_v5a.20130502.genotypes.vcf.gz",
+        "GENESIS_VAULT_INDEX",
+        "data/processed/vault/variant_index.db",
     )
 )
 
@@ -87,6 +91,18 @@ def get_familial_exposure() -> FamilialExposure:
     return FamilialExposure(db_path=FAMILIAL_EXPOSURE_DB_PATH)
 
 
+@lru_cache(maxsize=1)
+def get_vault_repository() -> VaultRepository:
+    """Create the persistent repository backed by the encrypted vault."""
+    from genesis_plugin.crypto_vault import StorageVault
+
+    vault = StorageVault.from_env()
+    return VaultRepository(
+        vault=vault,
+        index_path=VAULT_INDEX_PATH,
+    )
+
+
 @app.get("/")
 def home():
     return {
@@ -120,59 +136,53 @@ def register_family_relationship(request: FamilyRelationshipRequest):
         }
 
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/family/exposure/{participant_id}")
 def get_family_exposure(participant_id: str):
     """Return direct exposure and linked relatives' exposure separately."""
     try:
-        return get_familial_exposure().get_exposure_summary(
-            participant_id
-        )
+        return get_familial_exposure().get_exposure_summary(participant_id)
 
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/query")
 def query_genomic_data(request: QueryRequest):
-    # Step 1: Reject unregistered researchers before reading genomic data.
+    # Step 1: Reject unregistered researchers before accessing genomic data.
     try:
         get_identity_registry().resolve(request.requester_id)
     except PermissionError as exc:
-        raise HTTPException(
-            status_code=403,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # Step 2: Check whether the dataset is available.
-    if not VCF_PATH.is_file():
+    # Step 2: Ensure the persistent index is available.
+    if not VAULT_INDEX_PATH.is_file():
         raise HTTPException(
             status_code=503,
-            detail="Genomic dataset is unavailable on this server.",
+            detail="Vault index is unavailable. Ingest the dataset first.",
         )
 
+    # Step 3: Retrieve records through the vault. Any release or verification
+    # failure must stop the request before the disclosure budget is consumed.
     try:
-        # Step 3: Find all records matching the requested variant ID.
-        records = find_variant_records(
-            VCF_PATH,
-            request.variant_id,
+        records = get_vault_repository().get_variant_records(
+            request.variant_id
         )
+    except Exception as exc:
+        logger.exception("Vault record retrieval failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Verified genomic records are temporarily unavailable.",
+        ) from exc
 
-        # Step 4: Execute the protected query, enforce the disclosure
-        # budget, and record familial exposure.
+    # Step 4: Execute the protected query. Invalid queries are rejected before
+    # budget consumption; budget and familial exposure updates remain atomic
+    # when familial exposure tracking is enabled.
+    try:
         result = execute_protected_query(
             records=records,
             query_type=request.query_type,
@@ -195,12 +205,6 @@ def query_genomic_data(request: QueryRequest):
         }
 
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PermissionError as exc:
-        raise HTTPException(
-            status_code=429,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
