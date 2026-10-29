@@ -17,7 +17,11 @@ class DisclosureBudget:
         default_limit: int = 10,
         identity_registry: IdentityRegistry | None = None,
     ):
-        if default_limit < 1:
+        if (
+            not isinstance(default_limit, int)
+            or isinstance(default_limit, bool)
+            or default_limit < 1
+        ):
             raise ValueError("default_limit must be at least 1")
 
         self.db_path = Path(db_path)
@@ -68,6 +72,32 @@ class DisclosureBudget:
                 """
             )
 
+    @staticmethod
+    def _validate_scope(scope: tuple[str, ...]):
+        if any(
+            not isinstance(value, str) or not value.strip()
+            for value in scope
+        ):
+            raise ValueError("Budget scope fields must not be empty")
+
+    @staticmethod
+    def _validate_cost(cost: int):
+        if (
+            not isinstance(cost, int)
+            or isinstance(cost, bool)
+            or cost < 1
+        ):
+            raise ValueError("cost must be at least 1")
+
+    @staticmethod
+    def _format_status(row: tuple[int, int]) -> dict:
+        limit, used = row
+        return {
+            "limit": limit,
+            "used": used,
+            "remaining": limit - used,
+        }
+
     def _get_status_for_scope(
         self,
         participant_id: str,
@@ -84,12 +114,7 @@ class DisclosureBudget:
             purpose,
             consent_id,
         )
-
-        if any(
-            not isinstance(value, str) or not value.strip()
-            for value in scope
-        ):
-            raise ValueError("Budget scope fields must not be empty")
+        self._validate_scope(scope)
 
         with self._connect() as connection:
             connection.execute(
@@ -120,11 +145,10 @@ class DisclosureBudget:
                 scope,
             ).fetchone()
 
-        return {
-            "limit": row[0],
-            "used": row[1],
-            "remaining": row[0] - row[1],
-        }
+        if row is None:
+            raise RuntimeError("Could not initialize disclosure budget")
+
+        return self._format_status(row)
 
     def get_status(
         self,
@@ -155,13 +179,7 @@ class DisclosureBudget:
         cost: int = 1,
     ) -> dict:
         """Atomically consume budget or reject an over-budget request."""
-        if (
-            not isinstance(cost, int)
-            or isinstance(cost, bool)
-            or cost < 1
-        ):
-            raise ValueError("cost must be at least 1")
-
+        self._validate_cost(cost)
         canonical_id = self._resolve_requester(requester_id)
 
         scope = (
@@ -171,53 +189,157 @@ class DisclosureBudget:
             purpose,
             consent_id,
         )
+        self._validate_scope(scope)
 
-        # Validate the scope and ensure the budget row exists.
-        self._get_status_for_scope(
+        # Ensure the budget row exists before consuming it.
+        self._get_status_for_scope(*scope)
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+
+            try:
+                cursor = connection.execute(
+                    """
+                    UPDATE disclosure_budgets
+                    SET used = used + ?
+                    WHERE participant_id = ?
+                      AND requester_id = ?
+                      AND project_id = ?
+                      AND purpose = ?
+                      AND consent_id = ?
+                      AND used + ? <= budget_limit
+                    """,
+                    (cost, *scope, cost),
+                )
+
+                if cursor.rowcount != 1:
+                    raise PermissionError("Disclosure budget exhausted")
+
+                row = connection.execute(
+                    """
+                    SELECT budget_limit, used
+                    FROM disclosure_budgets
+                    WHERE participant_id = ?
+                      AND requester_id = ?
+                      AND project_id = ?
+                      AND purpose = ?
+                      AND consent_id = ?
+                    """,
+                    scope,
+                ).fetchone()
+
+                connection.commit()
+
+            except Exception:
+                connection.rollback()
+                raise
+
+        return self._format_status(row)
+
+    def consume_with_familial_exposure(
+        self,
+        participant_id: str,
+        requester_id: str,
+        project_id: str,
+        purpose: str,
+        consent_id: str,
+        familial_exposure,
+        cost: int = 1,
+    ) -> dict:
+        """
+        Atomically consume disclosure budget and record direct exposure.
+
+        The familial_exposure object must provide:
+        - db_path
+        - record_disclosure_in_transaction(connection, participant_id, cost)
+
+        Both database files must use rollback-journal mode for SQLite's
+        multi-database transaction guarantees.
+        """
+        self._validate_cost(cost)
+        canonical_id = self._resolve_requester(requester_id)
+
+        scope = (
             participant_id,
             canonical_id,
             project_id,
             purpose,
             consent_id,
         )
+        self._validate_scope(scope)
 
-        # The update and limit check happen in one transaction.
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        familial_db_path = Path(familial_exposure.db_path).resolve()
 
-            cursor = connection.execute(
-                """
-                UPDATE disclosure_budgets
-                SET used = used + ?
-                WHERE participant_id = ?
-                  AND requester_id = ?
-                  AND project_id = ?
-                  AND purpose = ?
-                  AND consent_id = ?
-                  AND used + ? <= budget_limit
-                """,
-                (cost, *scope, cost),
+        if familial_db_path == self.db_path.resolve():
+            raise ValueError(
+                "Disclosure budget and familial exposure must use "
+                "separate database files"
             )
 
-            if cursor.rowcount != 1:
-                connection.rollback()
-                raise PermissionError("Disclosure budget exhausted")
+        # Initialize/validate the budget scope before starting the
+        # transaction that updates both databases.
+        self._get_status_for_scope(*scope)
 
-            row = connection.execute(
-                """
-                SELECT budget_limit, used
-                FROM disclosure_budgets
-                WHERE participant_id = ?
-                  AND requester_id = ?
-                  AND project_id = ?
-                  AND purpose = ?
-                  AND consent_id = ?
-                """,
-                scope,
-            ).fetchone()
+        with self._connect() as connection:
+            try:
+                # Multi-database crash atomicity requires rollback-journal
+                # mode rather than WAL for both participating databases.
+                connection.execute("PRAGMA journal_mode = DELETE")
 
-        return {
-            "limit": row[0],
-            "used": row[1],
-            "remaining": row[0] - row[1],
-        }
+                connection.execute(
+                    "ATTACH DATABASE ? AS familial_db",
+                    (str(familial_db_path),),
+                )
+
+                connection.execute(
+                    "PRAGMA familial_db.journal_mode = DELETE"
+                )
+
+                connection.execute("BEGIN IMMEDIATE")
+
+                cursor = connection.execute(
+                    """
+                    UPDATE disclosure_budgets
+                    SET used = used + ?
+                    WHERE participant_id = ?
+                      AND requester_id = ?
+                      AND project_id = ?
+                      AND purpose = ?
+                      AND consent_id = ?
+                      AND used + ? <= budget_limit
+                    """,
+                    (cost, *scope, cost),
+                )
+
+                if cursor.rowcount != 1:
+                    raise PermissionError("Disclosure budget exhausted")
+
+                # This method must use the supplied connection and must
+                # not commit independently.
+                familial_exposure.record_disclosure_in_transaction(
+                    connection=connection,
+                    participant_id=participant_id,
+                    cost=cost,
+                )
+
+                row = connection.execute(
+                    """
+                    SELECT budget_limit, used
+                    FROM disclosure_budgets
+                    WHERE participant_id = ?
+                      AND requester_id = ?
+                      AND project_id = ?
+                      AND purpose = ?
+                      AND consent_id = ?
+                    """,
+                    scope,
+                ).fetchone()
+
+                connection.commit()
+
+            except Exception:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise
+
+        return self._format_status(row)

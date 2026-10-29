@@ -50,7 +50,11 @@ class FamilialExposure:
 
     @staticmethod
     def _validate_cost(cost: int):
-        if not isinstance(cost, int) or isinstance(cost, bool) or cost < 1:
+        if (
+            not isinstance(cost, int)
+            or isinstance(cost, bool)
+            or cost < 1
+        ):
             raise ValueError("cost must be at least 1")
 
     def register_relationship(
@@ -108,12 +112,7 @@ class FamilialExposure:
         participant_id: str,
         cost: int = 1,
     ) -> dict[str, int]:
-        """
-        Record direct exposure only for the queried participant.
-
-        Potential familial exposure is calculated separately from the
-        recorded exposure of explicitly linked relatives.
-        """
+        """Record direct exposure using this database's own transaction."""
         self._validate_text(participant_id, "participant_id")
         self._validate_cost(cost)
 
@@ -139,6 +138,45 @@ class FamilialExposure:
                 """,
                 (participant_id,),
             ).fetchone()
+
+        return {participant_id: row[0]}
+
+    def record_disclosure_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        participant_id: str,
+        cost: int = 1,
+    ) -> dict[str, int]:
+        """Record exposure within a caller-managed transaction.
+
+        The caller must attach this database using the alias 'familial_db'.
+        The caller is responsible for committing or rolling back.
+        """
+        self._validate_text(participant_id, "participant_id")
+        self._validate_cost(cost)
+
+        connection.execute(
+            """
+            INSERT INTO familial_db.familial_exposure (
+                participant_id,
+                exposure_units
+            )
+            VALUES (?, ?)
+            ON CONFLICT(participant_id)
+            DO UPDATE SET exposure_units =
+                exposure_units + excluded.exposure_units
+            """,
+            (participant_id, cost),
+        )
+
+        row = connection.execute(
+            """
+            SELECT exposure_units
+            FROM familial_db.familial_exposure
+            WHERE participant_id = ?
+            """,
+            (participant_id,),
+        ).fetchone()
 
         return {participant_id: row[0]}
 

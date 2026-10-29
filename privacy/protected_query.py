@@ -23,9 +23,11 @@ def execute_protected_query(
     """
     Execute a minimum-answer query subject to a persistent disclosure budget.
 
-    Invalid queries are rejected before charging the budget. Familial
-    exposure is recorded only after the budget has been consumed.
+    Invalid queries are rejected before charging the budget.
+    When familial exposure tracking is enabled, budget consumption and
+    direct exposure recording are performed atomically.
     """
+    # Validate and execute the query before charging the budget.
     result = execute_query(
         records=records,
         query_type=query_type,
@@ -33,18 +35,23 @@ def execute_protected_query(
         sample_id=sample_id,
     )
 
-    budget.consume(
-        participant_id=participant_id,
-        requester_id=requester_id,
-        project_id=project_id,
-        purpose=purpose,
-        consent_id=consent_id,
-        cost=cost,
-    )
-
     if familial_exposure is not None:
-        familial_exposure.record_disclosure(
+        budget.consume_with_familial_exposure(
             participant_id=participant_id,
+            requester_id=requester_id,
+            project_id=project_id,
+            purpose=purpose,
+            consent_id=consent_id,
+            familial_exposure=familial_exposure,
+            cost=cost,
+        )
+    else:
+        budget.consume(
+            participant_id=participant_id,
+            requester_id=requester_id,
+            project_id=project_id,
+            purpose=purpose,
+            consent_id=consent_id,
             cost=cost,
         )
 

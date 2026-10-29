@@ -101,3 +101,34 @@ def test_invalid_query_does_not_add_exposure(setup_engines):
 
     assert exposure.get_exposure("participant-001") == 0
     assert exposure.get_exposure("participant-002") == 0
+
+def test_exposure_failure_rolls_back_budget(setup_engines, monkeypatch):
+    budget, exposure, records = setup_engines
+
+    def fail_recording(*args, **kwargs):
+        raise RuntimeError("Simulated exposure recording failure")
+
+    monkeypatch.setattr(
+        exposure,
+        "record_disclosure_in_transaction",
+        fail_recording,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Simulated exposure recording failure",
+    ):
+        make_query(budget, exposure, records)
+
+    # Neither operation should leave a partial update.
+    status = budget.get_status(
+        participant_id="participant-001",
+        requester_id="researcher-001",
+        project_id="project-001",
+        purpose="research",
+        consent_id="consent-001",
+    )
+
+    assert status["used"] == 0
+    assert status["remaining"] == 1
+    assert exposure.get_exposure("participant-001") == 0
