@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets, keys, and local vault data
+.env
+.env.*
+keys/
+*.key
+*.pem
+*.p12
+*.pfx
+vault-data/
+.genesis/
+local-config/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

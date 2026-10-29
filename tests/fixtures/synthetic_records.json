@@ -1,0 +1,9 @@
+{
+  "dataset": "synthetic-only",
+  "subject_alias": "SYNTH-0001",
+  "assembly": "GRCh38",
+  "variants": [
+    {"chrom": "1", "pos": 12345, "ref": "A", "alt": "G"},
+    {"chrom": "7", "pos": 55249071, "ref": "T", "alt": "C"}
+  ]
+}

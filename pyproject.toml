@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "genesis-plugin"
+version = "0.1.0"
+description = "GENESIS cryptographic storage vault for synthetic genomic records"
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=43.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[project.scripts]
+genesis-gen-keys = "genesis_plugin.crypto_vault.keys:main"
+
+[tool.setuptools.packages.find]
+include = ["genesis_plugin*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
