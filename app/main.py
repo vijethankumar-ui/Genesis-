@@ -26,6 +26,7 @@ from app.models.auth import LoginRequest, AuthenticationTokenResponse
 from app.services.consent_service import (
     create_consent_policy,
     get_consent_policy,
+    revoke_consent_policy,
 )
 
 app = FastAPI(
@@ -35,6 +36,21 @@ app = FastAPI(
 )
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(
+        bearer_scheme
+    ),
+) -> dict:
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    claims = decode_authentication_token(credentials.credentials)
+    return claims
 
 
 @app.get("/health")
@@ -82,22 +98,36 @@ def read_consent(policy_id: UUID):
 
     return policy
 
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(
-        bearer_scheme
-    ),
-) -> dict:
-    if credentials is None:
+@app.post(
+    "/consents/{policy_id}/revoke",
+    response_model=ConsentPolicy,
+)
+def revoke_consent(
+    policy_id: UUID,
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user["role"] != "admin":
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only authorized administrators can revoke consent.",
         )
 
-    claims = decode_authentication_token(credentials.credentials)
+    try:
+        policy = revoke_consent_policy(policy_id)
+    except PsycopgError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to revoke consent policy",
+        )
 
-    return claims
-bearer_scheme = HTTPBearer(auto_error=False)
+    if policy is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Active consent policy not found",
+        )
+
+    return policy    
+
 
 @app.post(
     "/authorize",
@@ -124,16 +154,19 @@ def authorize(
         )
 
 
+
 @app.post("/auth/login", response_model=AuthenticationTokenResponse)
 def login(data: LoginRequest):
-    if not authenticate_demo_user(data.username, data.password):
+    user = authenticate_demo_user(data.username, data.password)
+
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    token, expires_in = create_authentication_token()
+    token, expires_in = create_authentication_token(user)
 
     return AuthenticationTokenResponse(
         access_token=token,

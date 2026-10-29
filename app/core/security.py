@@ -1,4 +1,3 @@
-
 from datetime import datetime, timedelta, timezone
 import secrets
 
@@ -16,67 +15,116 @@ from app.core.config import (
 )
 
 
-def create_authentication_token() -> tuple[str, int]:
+def _get_secret() -> str:
     if not JWT_SECRET_KEY:
         raise RuntimeError("JWT_SECRET_KEY is not configured")
+    return JWT_SECRET_KEY
+
+
+def authenticate_demo_user(username: str, password: str):
+    """Return user details for valid credentials, otherwise None."""
+    configured_username = AUTH_DEMO_USERNAME or ""
+    configured_password = AUTH_DEMO_PASSWORD or ""
+
+    username_matches = secrets.compare_digest(
+        username or "", configured_username
+    )
+    password_matches = secrets.compare_digest(
+        password or "", configured_password
+    )
+
+    if (
+        configured_username
+        and configured_password
+        and username_matches
+        and password_matches
+    ):
+        return {
+            "username": configured_username,
+            "sub": AUTH_DEMO_SUBJECT_ID or configured_username,
+            "role": AUTH_DEMO_ROLE or "researcher",
+        }
+
+    return None
+
+
+def create_authentication_token(
+    user_data: dict | None = None,
+) -> tuple[str, int]:
+    """Create a login token without a data scope."""
+    secret = _get_secret()
+    user_data = user_data or {}
 
     now = datetime.now(timezone.utc)
     expires_in = ACCESS_TOKEN_MINUTES * 60
 
     claims = {
-        "sub": AUTH_DEMO_SUBJECT_ID,
-        "username": AUTH_DEMO_USERNAME,
-        "role": AUTH_DEMO_ROLE,
+        "sub": user_data.get(
+            "sub",
+            AUTH_DEMO_SUBJECT_ID or AUTH_DEMO_USERNAME or "demo",
+        ),
+        "username": user_data.get("username", AUTH_DEMO_USERNAME),
+        "role": user_data.get("role", AUTH_DEMO_ROLE or "researcher"),
         "type": "authentication",
+        "token_type": "access",
         "iat": now,
         "exp": now + timedelta(seconds=expires_in),
     }
 
-    token = jwt.encode(
-        claims,
-        JWT_SECRET_KEY,
-        algorithm=JWT_ALGORITHM,
-    )
-
+    token = jwt.encode(claims, secret, algorithm=JWT_ALGORITHM)
     return token, expires_in
 
 
-def authenticate_demo_user(username: str, password: str) -> bool:
-    configured_username = AUTH_DEMO_USERNAME or ""
-    configured_password = AUTH_DEMO_PASSWORD or ""
+def create_scoped_token(
+    policy_id: str,
+    subject_id: str,
+    scope: str,
+    purpose: str,
+    role: str,
+) -> tuple[str, int]:
+    """Create a short-lived token carrying consent scope restrictions."""
+    secret = _get_secret()
 
-    username_matches = secrets.compare_digest(
-        username, configured_username
-    )
-    password_matches = secrets.compare_digest(
-        password, configured_password
-    )
+    now = datetime.now(timezone.utc)
+    expires_in = ACCESS_TOKEN_MINUTES * 60
 
-    return bool(
-        configured_username
-        and configured_password
-        and username_matches
-        and password_matches
-    )
+    claims = {
+        "sub": subject_id,
+        "policy_id": policy_id,
+        "scope": scope,
+        "purpose": purpose,
+        "role": role,
+        "type": "scoped_access",
+        "token_type": "scoped_access",
+        "iat": now,
+        "exp": now + timedelta(seconds=expires_in),
+    }
+
+    token = jwt.encode(claims, secret, algorithm=JWT_ALGORITHM)
+    return token, expires_in
 
 
-def decode_authentication_token(token: str) -> dict:
-    if not JWT_SECRET_KEY:
-        raise RuntimeError("JWT_SECRET_KEY is not configured")
+def decode_token(token: str) -> dict:
+    """Decode a JWT, rejecting invalid or expired tokens."""
+    secret = _get_secret()
 
     try:
-        claims = jwt.decode(
+        return jwt.decode(
             token,
-            JWT_SECRET_KEY,
+            secret,
             algorithms=[JWT_ALGORITHM],
-            options={"require": ["sub", "exp", "iat", "type", "role"]},
         )
     except jwt.InvalidTokenError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired authentication token",
+            detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+def decode_authentication_token(token: str) -> dict:
+    """Accept authentication tokens only, not scoped tokens."""
+    claims = decode_token(token)
 
     if claims.get("type") != "authentication":
         raise HTTPException(

@@ -32,9 +32,9 @@ def authorize_access(request: AccessRequest) -> AuthorizationDecision:
                   AND approved_purpose = %s
                   AND recipient_role = %s
                   AND status = 'ACTIVE'
-                  AND expiry_date > CURRENT_TIMESTAMP
-                ORDER BY created_at DESC
-                LIMIT 1
+                  AND expiry_date >= CURRENT_DATE
+                  ORDER BY expiry_date DESC, policy_id
+                  LIMIT 1
                 """,
                 (
                     request.subject_id,

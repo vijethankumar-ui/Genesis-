@@ -96,3 +96,40 @@ def get_consent_policy(policy_id: UUID) -> ConsentPolicy | None:
         expiry_date=row[5],
         status=row[6],
     )
+
+def revoke_consent_policy(policy_id: UUID) -> ConsentPolicy | None:
+    with psycopg.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE consent_policies
+                SET status = 'REVOKED'
+                WHERE policy_id = %s
+                  AND status = 'ACTIVE'
+                RETURNING policy_id, subject_id, data_scope,
+                          approved_purpose, recipient_role,
+                          expiry_date, status
+                """,
+                (policy_id,),
+            )
+
+            row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return ConsentPolicy(
+        policy_id=row[0],
+        subject_id=row[1],
+        data_scope=row[2],
+        approved_purpose=row[3],
+        recipient_role=row[4],
+        expiry_date=row[5],
+        status=row[6],
+    )

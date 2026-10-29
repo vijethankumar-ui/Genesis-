@@ -11,7 +11,8 @@ DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 
 
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY") or os.getenv("JWT_SECRET")
+JWT_SECRET = JWT_SECRET_KEY
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 
 AUTH_DEMO_USERNAME = os.getenv("AUTH_DEMO_USERNAME")
