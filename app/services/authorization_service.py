@@ -35,7 +35,7 @@ def authorize_access(
                   AND approved_purpose = %s
                   AND recipient_role = %s
                   AND status = 'ACTIVE'
-                  AND expiry_date >= CURRENT_DATE
+                  AND expiry_date >= CURRENT_TIMESTAMP
                 ORDER BY expiry_date DESC, policy_id
                 LIMIT 1
                 """,
